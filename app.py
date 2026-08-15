@@ -22,7 +22,7 @@ st.title("⚖️ Bias-Aware Loan Approval & Fairness Audit")
 st.markdown(
     """
 Evaluate credit risk decisions across **3 Mitigation Phases** to see how Phase 3 balances high accuracy with fair lending:
-- **Phase 1 (Baseline):** Standard model trained on raw data (often exhibits demographic bias).
+- **Phase 1 (Baseline):** Standard model trained on raw data (exhibits historical demographic bias).
 - **Phase 2 (SMOTE):** Rebalanced via synthetic oversampling.
 - **Phase 3 (Reweighted + Tuned):** Calibrated to eliminate unfair bias while preserving predictive accuracy.
 """
@@ -121,6 +121,7 @@ input_mode = st.sidebar.radio(
 
 raw_input = {}
 ground_truth_val = None
+selected_row_idx = None
 
 if input_mode == "Select from Full Test Set":
   if artifacts.get("X_test") is not None:
@@ -128,7 +129,7 @@ if input_mode == "Select from Full Test Set":
     total_samples = len(test_df)
 
     st.sidebar.subheader("📋 Select Test Applicant Row")
-    selected_idx = st.sidebar.number_input(
+    selected_row_idx = st.sidebar.number_input(
         f"Applicant Index (0 to {total_samples - 1}):",
         min_value=0,
         max_value=total_samples - 1,
@@ -136,10 +137,9 @@ if input_mode == "Select from Full Test Set":
         step=1,
     )
 
-    # Extract selected row
-    selected_row = test_df.iloc[selected_idx].to_dict()
+    selected_row = test_df.iloc[selected_row_idx].to_dict()
 
-    # Extract target column if present in the dataset (e.g., Risk_Flag or Target)
+    # Extract target column if present in the dataset (Risk_Flag, target, etc.)
     target_keys = ["Risk_Flag", "target", "Target", "label", "risk_flag"]
     target_found = None
     for k in target_keys:
@@ -148,10 +148,12 @@ if input_mode == "Select from Full Test Set":
         ground_truth_val = selected_row[k]
         break
 
-    # Strip target column out so it doesn't enter feature scaling
+    # Exclude target variable from feature scaling pipeline
     raw_input = {k: v for k, v in selected_row.items() if k != target_found}
 
-    st.sidebar.success(f"Loaded Applicant #{selected_idx} of {total_samples}.")
+    st.sidebar.success(
+        f"Loaded Applicant #{selected_row_idx} of {total_samples}."
+    )
   else:
     st.sidebar.error("test_dataset.csv could not be retrieved from Hugging Face.")
 
@@ -248,24 +250,56 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
   with tab1:
     st.subheader(f"📊 Loan Approval Decision Comparison ({selected_arch})")
 
-    # GROUND TRUTH BANNER
-    if ground_truth_val is not None:
-      # Assuming 0 = Low Risk / Approved, 1 = High Risk / Defaulted (or vice versa)
-      is_low_risk = int(ground_truth_val) == 0
-      gt_text = (
-          "Approved / Low Risk (0)" if is_low_risk else "Defaulted / High Risk (1)"
-      )
-      gt_icon = "🟢" if is_low_risk else "🔴"
+    # =========================================================================
+    # DEDICATED SEPARATE BLOCK: HISTORICAL GROUND TRUTH LABEL
+    # =========================================================================
+    with st.container(border=True):
+      st.markdown("### 🏷️ Selected Record Original Label (Ground Truth)")
 
-      st.markdown(f"""
-            <div style="background-color: #f0f4f8; padding: 15px; border-radius: 10px; border-left: 6px solid #1E88E5; margin-bottom: 20px;">
-                <h4 style="margin:0; color:#0D47A1;">📌 Ground Truth (Actual Historical Outcome): {gt_icon} <strong>{gt_text}</strong></h4>
-                <p style="margin:5px 0 0 0; color:#555; font-size: 0.95em;">
-                    This is the recorded historical outcome for this test profile in the dataset.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+      if ground_truth_val is not None:
+        # Assuming Risk_Flag = 0 -> Low Risk / Approved; Risk_Flag = 1 -> High Risk / Defaulted
+        val_int = int(ground_truth_val)
+        is_low_risk_gt = val_int == 0
 
+        gt_col1, gt_col2, gt_col3 = st.columns([1.2, 1.8, 2.0])
+
+        with gt_col1:
+          st.metric(
+              label="Original Dataset Label",
+              value=f"Value: {val_int}",
+          )
+
+        with gt_col2:
+          if is_low_risk_gt:
+            st.markdown("**Historical Outcome:**")
+            st.markdown("### 🟢 Low Risk (Approved)")
+          else:
+            st.markdown("**Historical Outcome:**")
+            st.markdown("### 🔴 High Risk (Defaulted)")
+
+        with gt_col3:
+          # Match comparison: Phase 3 prediction vs Historical Ground Truth
+          p3_matched = dec_p3 == is_low_risk_gt
+          st.markdown("**Phase 3 Prediction Match:**")
+          if p3_matched:
+            st.success("✅ **Matches Historical Outcome**")
+          else:
+            st.warning("⚠️ **Differs from Historical Outcome**")
+
+        st.caption(
+            f"ℹ️ *Record #{selected_row_idx} loaded directly from"
+            " `test_dataset.csv`.*"
+        )
+
+      else:
+        st.info(
+            "👤 **Manual Form Entry Active:** Original ground truth label is"
+            " not available for custom user inputs."
+        )
+
+    st.markdown("---")
+
+    # --- THREE-PHASE PREDICTION COMPARISON CARDS ---
     col1, col2, col3 = st.columns(3)
 
     def get_badge(approved):
@@ -301,49 +335,23 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
 
     st.divider()
 
-    # Plain English Takeaway Box
-    st.markdown("#### 💡 How Phase 3 Affects This Applicant:")
-
-    # 1. Compare Phase 1 vs Phase 3 (Model Agreement across Mitigation)
-    models_agree = (dec_p1 == dec_p3)
-
-    # 2. Compare Phase 3 vs Ground Truth (Prediction Accuracy)
-    if ground_truth_val is not None:
-        # Assuming Ground Truth 0 = Low Risk / Approved, 1 = High Risk / Defaulted
-        actual_approved = int(ground_truth_val) == 0
-        p3_is_accurate = dec_p3 == actual_approved
+    # --- TAKEAWAY & EXPLANATION SUMMARY ---
+    st.markdown("#### 💡 Summary & Audit Insights:")
+    if dec_p1 != dec_p3:
+      st.success(
+          "✨ **Phase Decision Shift Detected:** Phase 1 rejected this"
+          " applicant due to historical feature bias (such as marital status or"
+          " address location). Phase 3 removes systemic bias penalties while"
+          " maintaining credit evaluation standards, resulting in a fair"
+          " approval."
+      )
     else:
-        p3_is_accurate = None
-
-    # --- Scenario A: Decision Shift Between Phases ---
-    if not models_agree:
-        st.success(
-            "✨ **Phase Decision Shift Detected:** Phase 1 rejected this applicant"
-            " due to historical feature bias (such as marital status or address"
-            " frequency). Phase 3 removes systemic bias penalties while maintaining"
-            " credit evaluation standards, resulting in a fair approval."
-        )
-
-    # --- Scenario B: Both Phases Agree ---
-    else:
-        st.info(
-            f"ℹ️ **Phase Agreement:** Both Phase 1 and Phase 3 arrived at the same"
-            f" decision ({get_badge(dec_p3)}). Phase 3 confirms that this decision"
-            " holds even after stripping away unfair demographic bias."
-        )
-
-    # --- Accuracy Callout (vs Ground Truth) ---
-    if p3_is_accurate is not None:
-        if p3_is_accurate:
-            st.caption(
-                "🎯 **Accuracy Check:** The Phase 3 prediction **matches** the actual"
-                " historical outcome (Ground Truth)."
-            )
-        else:
-            st.caption(
-                "⚠️ **Accuracy Check:** The Phase 3 prediction **differs** from the"
-                " actual historical outcome."
-            )
+      st.info(
+          f"ℹ️ **Phase Agreement:** Both Phase 1 and Phase 3 arrived at the"
+          f" same decision ({get_badge(dec_p3)}). Phase 3 confirms that this"
+          " decision remains stable even after removing demographic bias"
+          " factors."
+      )
 
   # --- TAB 2: VISUAL FAIRNESS & PERFORMANCE METRICS ---
   with tab2:
@@ -353,7 +361,6 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
         " three phases:"
     )
 
-    # 1. VISUAL COMPARISON CHARTS
     c1, c2 = st.columns(2)
 
     with c1:
@@ -386,7 +393,6 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
 
     st.divider()
 
-    # 2. EASY-TO-UNDERSTAND METRIC SUMMARY TABLE
     st.markdown("#### 📋 Detailed Metrics Summary Table")
     summary_df = pd.DataFrame({
         "Phase": [
@@ -409,7 +415,6 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
     })
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-    # 3. EXPLANATION CARDS FOR NON-TECHNICAL USERS
     st.markdown("---")
     st.markdown("### 📖 Understanding the Key Terms")
 
