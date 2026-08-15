@@ -303,21 +303,47 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
 
     # Plain English Takeaway Box
     st.markdown("#### 💡 How Phase 3 Affects This Applicant:")
-    if dec_p1 != dec_p3:
-      st.success(
-          "✨ **Decision Shift Detected!** Phase 1 rejected this applicant due"
-          " to historical feature bias (such as marital status or address"
-          " location). Phase 3 removes systemic bias penalties while"
-          " maintaining accurate credit evaluation, resulting in a fair"
-          " approval decision."
-      )
+
+    # 1. Compare Phase 1 vs Phase 3 (Model Agreement across Mitigation)
+    models_agree = (dec_p1 == dec_p3)
+
+    # 2. Compare Phase 3 vs Ground Truth (Prediction Accuracy)
+    if ground_truth_val is not None:
+        # Assuming Ground Truth 0 = Low Risk / Approved, 1 = High Risk / Defaulted
+        actual_approved = int(ground_truth_val) == 0
+        p3_is_accurate = dec_p3 == actual_approved
     else:
-      st.info(
-          "ℹ️ **Consistent Decision:** Both Phase 1 and Phase 3 arrived at the"
-          f" same classification ({get_badge(dec_p3)}). However, Phase 3"
-          " adjusts the underlying approval probability score to prevent"
-          " unfair bias against protected groups."
-      )
+        p3_is_accurate = None
+
+    # --- Scenario A: Decision Shift Between Phases ---
+    if not models_agree:
+        st.success(
+            "✨ **Phase Decision Shift Detected:** Phase 1 rejected this applicant"
+            " due to historical feature bias (such as marital status or address"
+            " frequency). Phase 3 removes systemic bias penalties while maintaining"
+            " credit evaluation standards, resulting in a fair approval."
+        )
+
+    # --- Scenario B: Both Phases Agree ---
+    else:
+        st.info(
+            f"ℹ️ **Phase Agreement:** Both Phase 1 and Phase 3 arrived at the same"
+            f" decision ({get_badge(dec_p3)}). Phase 3 confirms that this decision"
+            " holds even after stripping away unfair demographic bias."
+        )
+
+    # --- Accuracy Callout (vs Ground Truth) ---
+    if p3_is_accurate is not None:
+        if p3_is_accurate:
+            st.caption(
+                "🎯 **Accuracy Check:** The Phase 3 prediction **matches** the actual"
+                " historical outcome (Ground Truth)."
+            )
+        else:
+            st.caption(
+                "⚠️ **Accuracy Check:** The Phase 3 prediction **differs** from the"
+                " actual historical outcome."
+            )
 
   # --- TAB 2: VISUAL FAIRNESS & PERFORMANCE METRICS ---
   with tab2:
