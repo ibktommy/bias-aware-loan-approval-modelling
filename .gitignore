@@ -1,0 +1,26 @@
+# Jupyter Notebook Checkpoints & Cache
+.ipynb_checkpoints/
+.virtual_documents/
+bias-aware.ipynb
+loan_approval_dataset.json
+# Python Virtual Environments & Caches
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Local Model Artifacts & Data (Since models are hosted on Hugging Face Hub)
+deployment_artifacts/
+*.joblib
+
+# Anaconda Project Directories
+anaconda_projects/
+
+# IDE Settings
+.idea/
+.vscode/
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
