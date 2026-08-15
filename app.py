@@ -170,16 +170,9 @@ if input_mode == "Select from Full Test Set":
             ground_truth_val = selected_row[col]
             break
 
-    # Exclude non-feature metadata columns (target & auxiliary metadata like 'Age_Group')
-    EXCLUDE_COLS = {target_col_found, "Age_Group", "age_group"}.colorkey
-    if target_col_found is not None:
-        raw_input = {
-            k: v
-            for k, v in selected_row.items()
-            if k != target_col_found and k != "Age_Group"
-        }
-    else:
-        raw_input = selected_row.copy()
+    # Exclude target and metadata/grouping columns from model input features
+    EXCLUDE_COLS = {target_col_found, "Age_Group", "age_group"}
+    raw_input = {k: v for k, v in selected_row.items() if k not in EXCLUDE_COLS}
 
     # Strip target column out so it doesn't enter feature scaling
     if target_col_found is not None:
