@@ -114,14 +114,17 @@ selected_arch = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.header("📥 Applicant Input Mode")
 
+# Use direct options without conflicting session state keys
 input_mode = st.sidebar.radio(
     "Choose Input Method:",
     options=["Select from Full Test Set", "Manual Form Entry"],
+    index=0,
 )
 
 raw_input = {}
 ground_truth_val = None
 selected_row_idx = None
+target_col_found = None
 
 if input_mode == "Select from Full Test Set":
   if artifacts.get("X_test") is not None:
@@ -139,25 +142,44 @@ if input_mode == "Select from Full Test Set":
 
     selected_row = test_df.iloc[selected_row_idx].to_dict()
 
-    # Extract target column if present in the dataset (Risk_Flag, target, etc.)
-    target_keys = ["Risk_Flag", "target", "Target", "label", "risk_flag"]
-    target_found = None
-    for k in target_keys:
-      if k in selected_row:
-        target_found = k
-        ground_truth_val = selected_row[k]
+    # Normalized target column detection (matches riskflag, risk_flag, target, loan_status, etc.)
+    TARGET_KEYWORDS = [
+        "riskflag",
+        "risk",
+        "target",
+        "label",
+        "loanstatus",
+        "default",
+        "class",
+        "outcome",
+        "y",
+        "status",
+    ]
+
+    for col in selected_row.keys():
+      normalized_col = (
+          str(col).strip().lower().replace("_", "").replace(" ", "")
+      )
+      if normalized_col in TARGET_KEYWORDS:
+        target_col_found = col
+        ground_truth_val = selected_row[col]
         break
 
-    # Exclude target variable from feature scaling pipeline
-    raw_input = {k: v for k, v in selected_row.items() if k != target_found}
+    # Strip target column out so it doesn't enter feature scaling
+    if target_col_found is not None:
+      raw_input = {
+          k: v for k, v in selected_row.items() if k != target_col_found
+      }
+    else:
+      raw_input = selected_row.copy()
 
     st.sidebar.success(
         f"Loaded Applicant #{selected_row_idx} of {total_samples}."
     )
   else:
-    st.sidebar.error("test_dataset.csv could not be retrieved from Hugging Face.")
+    st.sidebar.error("test_dataset.csv could not be retrieved from HF Hub.")
 
-elif input_mode == "Manual Form Entry":
+else:  # Manual Form Entry
   st.sidebar.subheader("👤 Enter Applicant Details")
   raw_input["Income"] = st.sidebar.number_input(
       "Income ($)",
@@ -256,45 +278,55 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
     with st.container(border=True):
       st.markdown("### 🏷️ Selected Record Original Label (Ground Truth)")
 
-      if ground_truth_val is not None:
-        # Assuming Risk_Flag = 0 -> Low Risk / Approved; Risk_Flag = 1 -> High Risk / Defaulted
-        val_int = int(ground_truth_val)
-        is_low_risk_gt = val_int == 0
+      # STRICT BRANCHING: Check 'Select from Full Test Set' FIRST
+      if input_mode == "Select from Full Test Set":
+        if ground_truth_val is not None:
+          val_int = int(ground_truth_val)
+          # Assuming 0 -> Low Risk / Approved; 1 -> High Risk / Defaulted
+          is_low_risk_gt = val_int == 0
 
-        gt_col1, gt_col2, gt_col3 = st.columns([1.2, 1.8, 2.0])
+          gt_col1, gt_col2, gt_col3 = st.columns([1.2, 1.8, 2.0])
 
-        with gt_col1:
-          st.metric(
-              label="Original Dataset Label",
-              value=f"Value: {val_int}",
+          with gt_col1:
+            st.metric(
+                label="Dataset Column Name",
+                value=f"'{target_col_found}'",
+                delta=f"Raw Label: {val_int}",
+            )
+
+          with gt_col2:
+            if is_low_risk_gt:
+              st.markdown("**Historical Outcome:**")
+              st.markdown("### 🟢 Low Risk (Approved)")
+            else:
+              st.markdown("**Historical Outcome:**")
+              st.markdown("### 🔴 High Risk (Defaulted)")
+
+          with gt_col3:
+            p3_matched = dec_p3 == is_low_risk_gt
+            st.markdown("**Phase 3 Prediction Match:**")
+            if p3_matched:
+              st.success("✅ **Matches Historical Outcome**")
+            else:
+              st.warning("⚠️ **Differs from Historical Outcome**")
+
+          st.caption(
+              f"ℹ️ *Showing Row Index **#{selected_row_idx}** directly from"
+              " `test_dataset.csv`.*"
           )
 
-        with gt_col2:
-          if is_low_risk_gt:
-            st.markdown("**Historical Outcome:**")
-            st.markdown("### 🟢 Low Risk (Approved)")
-          else:
-            st.markdown("**Historical Outcome:**")
-            st.markdown("### 🔴 High Risk (Defaulted)")
-
-        with gt_col3:
-          # Match comparison: Phase 3 prediction vs Historical Ground Truth
-          p3_matched = dec_p3 == is_low_risk_gt
-          st.markdown("**Phase 3 Prediction Match:**")
-          if p3_matched:
-            st.success("✅ **Matches Historical Outcome**")
-          else:
-            st.warning("⚠️ **Differs from Historical Outcome**")
-
-        st.caption(
-            f"ℹ️ *Record #{selected_row_idx} loaded directly from"
-            " `test_dataset.csv`.*"
-        )
+        else:
+          st.warning(
+              f"⚠️ **Loaded Row #{selected_row_idx} from test_dataset.csv**, but"
+              " could not automatically identify the ground truth target"
+              " column.\n\n"
+              f"**Columns in CSV:** `{list(raw_input.keys())}`"
+          )
 
       else:
         st.info(
-            "👤 **Manual Form Entry Active:** Original ground truth label is"
-            " not available for custom user inputs."
+            "👤 **Manual Form Entry Active:** Ground truth label is not"
+            " available for custom user inputs."
         )
 
     st.markdown("---")
@@ -355,7 +387,7 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
 
   # --- TAB 2: VISUAL FAIRNESS & PERFORMANCE METRICS ---
   with tab2:
-    st.subheader("⚖️ How Phase 3 Solves Bias Without Sacrificing Accuracy")
+    st.subheader("秤 How Phase 3 Solves Bias Without Sacrificing Accuracy")
     st.markdown(
         "Below is a comparison of performance and bias metrics across all"
         " three phases:"
@@ -414,24 +446,6 @@ if artifacts and "scaler" in artifacts and not input_df.empty:
         ],
     })
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.markdown("### 📖 Understanding the Key Terms")
-
-    e1, e2 = st.columns(2)
-    with e1:
-      st.markdown("""
-            > **What is Disparate Impact Ratio?**  
-            > It measures whether loan approval rates are equal across different demographic groups (e.g., single vs. married applicants).  
-            > - **Below 0.80:** Illegal discrimination under the US 80% Rule.  
-            > - **0.94 (Phase 3):** Near-perfect equality across groups.
-            """)
-
-    with e2:
-      st.markdown("""
-            > **Why didn't accuracy drop significantly?**  
-            > Phase 3 uses **Sample Reweighting** during model training. It penalizes the model when it relies on non-credit proxy features (like marital status) while rewarding the model for focusing on real financial risk factors (like income and experience).
-            """)
 
   # --- TAB 3: DIAGNOSTICS & LOGS ---
   with tab3:
