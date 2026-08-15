@@ -142,28 +142,44 @@ if input_mode == "Select from Full Test Set":
 
     selected_row = test_df.iloc[selected_row_idx].to_dict()
 
-    # Normalized target column detection (matches riskflag, risk_flag, target, loan_status, etc.)
+    # Keywords to identify the target label column
     TARGET_KEYWORDS = [
-        "riskflag",
+        "actualdefault",
+        "default",
         "risk",
         "target",
         "label",
-        "loanstatus",
-        "default",
-        "class",
-        "outcome",
-        "y",
         "status",
+        "outcome",
+        "class",
     ]
 
     for col in selected_row.keys():
-      normalized_col = (
-          str(col).strip().lower().replace("_", "").replace(" ", "")
-      )
-      if normalized_col in TARGET_KEYWORDS:
-        target_col_found = col
-        ground_truth_val = selected_row[col]
-        break
+        normalized_col = (
+            str(col)
+            .strip()
+            .lower()
+            .replace("_", "")
+            .replace(" ", "")
+            .replace("/", "")
+        )
+
+        # Substring match catches 'Actual_Default', 'actual_default', 'is_default', 'Risk_Flag', etc.
+        if any(kw in normalized_col for kw in TARGET_KEYWORDS):
+            target_col_found = col
+            ground_truth_val = selected_row[col]
+            break
+
+    # Exclude non-feature metadata columns (target & auxiliary metadata like 'Age_Group')
+    EXCLUDE_COLS = {target_col_found, "Age_Group", "age_group"}.colorkey
+    if target_col_found is not None:
+        raw_input = {
+            k: v
+            for k, v in selected_row.items()
+            if k != target_col_found and k != "Age_Group"
+        }
+    else:
+        raw_input = selected_row.copy()
 
     # Strip target column out so it doesn't enter feature scaling
     if target_col_found is not None:
