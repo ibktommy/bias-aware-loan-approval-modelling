@@ -40,7 +40,7 @@ REPO_ID = "atomdev-ibktommy/credit-bias-audit-models"
 
 
 # -----------------------------------------------------------------------------
-# 2. DYNAMIC ARTIFACT LOADER (HUGGING FACE HUB + LOCAL FALLBACK)
+# 2. DYNAMIC ARTIFACT LOADER
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_hf_artifacts():
@@ -60,7 +60,6 @@ def load_hf_artifacts():
   source_info = ""
 
   try:
-    # Primary: Download directly from Hugging Face Model Hub
     for key, filename in artifact_files.items():
       downloaded_path = hf_hub_download(
           repo_id=REPO_ID, repo_type="model", filename=filename
@@ -73,7 +72,6 @@ def load_hf_artifacts():
     source_info = f"Hugging Face Hub Live (`{REPO_ID}`)"
 
   except Exception as hf_err:
-    # Secondary: Fallback to local 'deployment_artifacts/' folder
     try:
       local_dir = "deployment_artifacts"
       for key, filename in artifact_files.items():
@@ -173,14 +171,19 @@ with tab1:
       sample_row = test_df.iloc[[idx]].copy()
 
       actual_target = int(sample_row["Actual_Default"].values[0])
-      demo_group = str(sample_row["Age_Group"].values[0])
+      demo_group = (
+          str(sample_row["Age_Group"].values[0])
+          if "Age_Group" in sample_row
+          else "Unknown"
+      )
 
+      # Extract feature subset (drop metadata columns if present)
       feature_cols = [
           c
           for c in test_df.columns
           if c not in ["Actual_Default", "Age_Group"]
       ]
-      input_features = sample_row[feature_cols]
+      input_features = sample_row[feature_cols].copy()
 
     with col_profile:
       st.subheader("📋 Selected Applicant Card")
@@ -200,7 +203,7 @@ with tab1:
           else "N/A"
       )
 
-      p1.metric("Age", f"{age_val} yrs")
+      p1.metric("Age", f"{age_val} yrs" if age_val != "N/A" else "N/A")
       p2.metric("Annual Income", f"${income_val:,.0f}")
       p3.metric("Credit Score", cs_val)
 
@@ -222,30 +225,31 @@ with tab1:
           "Young Adult (<=30)" if applicant_age <= 30 else "Senior (>55)"
       )
 
-      if not test_df.empty:
-        feature_cols = [
+      # Build dummy feature vector initialized to zero
+      if artifacts and "scaler" in artifacts and hasattr(artifacts["scaler"], "feature_names_in_"):
+        expected_cols = artifacts["scaler"].feature_names_in_
+      elif not test_df.empty:
+        expected_cols = [
             c
             for c in test_df.columns
             if c not in ["Actual_Default", "Age_Group"]
         ]
-        input_features = pd.DataFrame(
-            np.zeros((1, len(feature_cols))), columns=feature_cols
-        )
-        if "Age" in feature_cols:
-          input_features["Age"] = applicant_age
-        if "Income" in feature_cols:
-          input_features["Income"] = applicant_income
-        if "CreditScore" in feature_cols:
-          input_features["CreditScore"] = applicant_cs
-        if "DTI" in feature_cols:
-          input_features["DTI"] = applicant_dti
       else:
-        input_features = pd.DataFrame([[
-            applicant_age,
-            applicant_income,
-            applicant_cs,
-            applicant_dti,
-        ]])
+        expected_cols = ["Age", "Income", "CreditScore", "DTI"]
+
+      input_features = pd.DataFrame(
+          np.zeros((1, len(expected_cols))), columns=expected_cols
+      )
+
+      # Populate present numeric sliders dynamically if matching column names exist
+      for col, val in [
+          ("Age", applicant_age),
+          ("Income", applicant_income),
+          ("CreditScore", applicant_cs),
+          ("DTI", applicant_dti),
+      ]:
+        if col in input_features.columns:
+          input_features[col] = val
 
     with col_profile:
       st.subheader("📋 Configured Profile")
@@ -259,6 +263,14 @@ with tab1:
   # -----------------------------------------------------------------------------
   if artifacts and "scaler" in artifacts:
     scaler = artifacts["scaler"]
+
+    # Align input features strictly to scaler expectations
+    if hasattr(scaler, "feature_names_in_"):
+      expected_features = scaler.feature_names_in_
+      # Reindex: missing expected columns are filled with 0.0, unexpected columns dropped
+      input_features = input_features.reindex(
+          columns=expected_features, fill_value=0.0
+      )
 
     p1_key = "rf_p1" if selected_arch == "Random Forest" else "xgb_p1"
     p2_key = "rf_p2" if selected_arch == "Random Forest" else "xgb_p2"
