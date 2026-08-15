@@ -35,7 +35,9 @@ REPO_ID = "atomdev-ibktommy/credit-bias-audit-models"
 
 
 @st.cache_resource
+@st.cache_resource
 def load_artifacts():
+  repo_id = "atomdev-ibktommy/credit-bias-audit-models"
   artifact_files = {
       "scaler": "scaler.joblib",
       "rf_p1": "rf_phase1.joblib",
@@ -49,10 +51,21 @@ def load_artifacts():
   loaded = {}
   for key, filename in artifact_files.items():
     try:
-      file_path = hf_hub_download(repo_id=REPO_ID, filename=filename)
+      file_path = hf_hub_download(repo_id=repo_id, filename=filename)
       loaded[key] = joblib.load(file_path)
     except Exception as e:
       st.sidebar.error(f"Error loading {filename}: {e}")
+
+  # Load the full test dataset from Hugging Face Hub
+  try:
+    test_csv_path = hf_hub_download(repo_id=repo_id, filename="test_dataset.csv")
+    loaded["test_dataset"] = pd.read_csv(test_csv_path)
+  except Exception as e:
+    st.sidebar.warning(
+        f"Could not load test_dataset.csv from HF Hub ({e}). Using sample presets."
+    )
+    loaded["test_dataset"] = None
+
   return loaded
 
 
@@ -107,13 +120,35 @@ st.sidebar.markdown("---")
 st.sidebar.header("📥 Applicant Input Mode")
 
 input_mode = st.sidebar.radio(
-    "Choose Input Method:",
-    options=["Manual Form Entry", "Sample Test Preset"],
+    "Choose Input Method:", options=["Select from Full Test Set", "Manual Form Entry"]
 )
 
 raw_input = {}
 
-if input_mode == "Manual Form Entry":
+if input_mode == "Select from Full Test Set":
+  if artifacts.get("X_test") is not None:
+    test_df = artifacts["X_test"]
+    total_samples = len(test_df)
+
+    st.sidebar.subheader("📋 Select Test Applicant Row")
+    selected_idx = st.sidebar.number_input(
+        f"Select Applicant Row (0 to {total_samples - 1}):",
+        min_value=0,
+        max_value=total_samples - 1,
+        value=0,
+        step=1,
+    )
+
+    # Extract the chosen row as a dictionary
+    raw_input = test_df.iloc[selected_idx].to_dict()
+    st.sidebar.success(
+        f"Loaded Applicant #{selected_idx} from test set ({total_samples}"
+        " total records)."
+    )
+  else:
+    st.sidebar.error("X_test.csv not found in repository.")
+
+elif input_mode == "Manual Form Entry":
   st.sidebar.subheader("👤 Enter Applicant Details")
   raw_input["Income"] = st.sidebar.number_input(
       "Income ($)",
@@ -148,7 +183,6 @@ if input_mode == "Manual Form Entry":
       "State Frequency Count", min_value=1, max_value=50000, value=15000
   )
 
-  # One-hot encoded feature representation
   raw_input["Married_Single_single"] = 1 if married == "single" else 0
   raw_input["Married_Single_married"] = 1 if married == "married" else 0
   raw_input["House_Ownership_owned"] = 1 if house_ownership == "owned" else 0
@@ -158,69 +192,6 @@ if input_mode == "Manual Form Entry":
   )
   raw_input["Car_Ownership_yes"] = 1 if car_ownership == "yes" else 0
   raw_input["Car_Ownership_no"] = 1 if car_ownership == "no" else 0
-
-else:
-  st.sidebar.subheader("📋 Select Test Applicant Profile")
-  preset = st.sidebar.selectbox(
-      "Sample Profiles:",
-      options=[
-          "Profile A: Young / Single Applicant (Demographic Disparity Risk)",
-          "Profile B: Middle-Aged / Married / Homeowner",
-          "Profile C: Senior / Experienced / Low Income",
-      ],
-  )
-
-  if "Profile A" in preset:
-    raw_input = {
-        "Income": 850000,
-        "Age": 24,
-        "Experience": 2,
-        "CURRENT_JOB_YRS": 2,
-        "CURRENT_HOUSE_YRS": 3,
-        "CITY_Freq": 800,
-        "STATE_Freq": 12000,
-        "Married_Single_single": 1,
-        "Married_Single_married": 0,
-        "House_Ownership_rented": 1,
-        "House_Ownership_owned": 0,
-        "House_Ownership_norent_noown": 0,
-        "Car_Ownership_no": 1,
-        "Car_Ownership_yes": 0,
-    }
-  elif "Profile B" in preset:
-    raw_input = {
-        "Income": 4500000,
-        "Age": 42,
-        "Experience": 18,
-        "CURRENT_JOB_YRS": 10,
-        "CURRENT_HOUSE_YRS": 12,
-        "CITY_Freq": 2100,
-        "STATE_Freq": 28000,
-        "Married_Single_single": 0,
-        "Married_Single_married": 1,
-        "House_Ownership_owned": 1,
-        "House_Ownership_rented": 0,
-        "House_Ownership_norent_noown": 0,
-        "Car_Ownership_yes": 1,
-        "Car_Ownership_no": 0,
-    }
-  else:
-    raw_input = {
-        "Income": 1200000,
-        "Age": 55,
-        "Experience": 25,
-        "CURRENT_JOB_YRS": 15,
-        "CURRENT_HOUSE_YRS": 20,
-        "CITY_Freq": 500,
-        "STATE_Freq": 8000,
-        "Married_Single_single": 1,
-        "Married_Single_married": 0,
-        "House_Ownership_rented": 1,
-        "House_Ownership_owned": 0,
-        "House_Ownership_norent_noown": 0,
-        "Car_Ownership_yes": 0,
-        "Car_Ownership_no": 1,
-    }
 
 input_df = pd.DataFrame([raw_input])
 
