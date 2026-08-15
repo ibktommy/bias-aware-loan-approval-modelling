@@ -29,15 +29,13 @@ Evaluate credit risk decisions and inspect fairness interventions across **3 Mit
 )
 
 # -----------------------------------------------------------------------------
-# ARTIFACT LOADING FROM HUGGING FACE HUB
+# ARTIFACT & DATASET LOADING FROM HUGGING FACE HUB
 # -----------------------------------------------------------------------------
 REPO_ID = "atomdev-ibktommy/credit-bias-audit-models"
 
 
 @st.cache_resource
-@st.cache_resource
 def load_artifacts():
-  repo_id = "atomdev-ibktommy/credit-bias-audit-models"
   artifact_files = {
       "scaler": "scaler.joblib",
       "rf_p1": "rf_phase1.joblib",
@@ -49,22 +47,22 @@ def load_artifacts():
   }
 
   loaded = {}
+
+  # 1. Load model and scaler artifacts
   for key, filename in artifact_files.items():
     try:
-      file_path = hf_hub_download(repo_id=repo_id, filename=filename)
+      file_path = hf_hub_download(repo_id=REPO_ID, filename=filename)
       loaded[key] = joblib.load(file_path)
     except Exception as e:
       st.sidebar.error(f"Error loading {filename}: {e}")
 
-  # Load the full test dataset from Hugging Face Hub
+  # 2. Load the full test dataset CSV
   try:
-    test_csv_path = hf_hub_download(repo_id=repo_id, filename="test_dataset.csv")
-    loaded["test_dataset"] = pd.read_csv(test_csv_path)
+    test_csv_path = hf_hub_download(repo_id=REPO_ID, filename="test_dataset.csv")
+    loaded["X_test"] = pd.read_csv(test_csv_path)
   except Exception as e:
-    st.sidebar.warning(
-        f"Could not load test_dataset.csv from HF Hub ({e}). Using sample presets."
-    )
-    loaded["test_dataset"] = None
+    st.sidebar.warning(f"Could not load test_dataset.csv from HF Hub ({e}).")
+    loaded["X_test"] = None
 
   return loaded
 
@@ -73,14 +71,14 @@ artifacts = load_artifacts()
 
 
 # -----------------------------------------------------------------------------
-# ROBUST MODEL PREDICTION HELPER
+# SAFE MODEL PREDICTION HELPER
 # -----------------------------------------------------------------------------
 def predict_proba_safe(model, scaled_df):
   """Safely predicts positive class probability for both Scikit-Learn and XGBoost models
 
-  by dynamically reindexing input features to match the exact model schema.
+  by dynamically reindexing input features to match the model's expected schema.
   """
-  # 1. Check if model is XGBoost with trained booster feature names
+  # Check if model is XGBoost with booster feature names
   if hasattr(model, "get_booster"):
     try:
       booster_features = model.get_booster().feature_names
@@ -92,7 +90,7 @@ def predict_proba_safe(model, scaled_df):
     except Exception:
       pass
 
-  # 2. Check if Scikit-Learn model has feature_names_in_
+  # Check if Scikit-Learn model has feature_names_in_
   if hasattr(model, "feature_names_in_"):
     model_features = list(model.feature_names_in_)
     aligned_for_sklearn = scaled_df.reindex(
@@ -100,12 +98,12 @@ def predict_proba_safe(model, scaled_df):
     )
     return float(model.predict_proba(aligned_for_sklearn)[:, 1][0])
 
-  # 3. Fallback to raw numpy array if no feature names recorded
+  # Fallback to raw numpy array if no explicit feature names exist
   return float(model.predict_proba(scaled_df.values)[:, 1][0])
 
 
 # -----------------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# SIDEBAR CONTROLS & APPLICANT SELECTION
 # -----------------------------------------------------------------------------
 st.sidebar.header("⚙️ Model Configuration")
 
@@ -120,7 +118,8 @@ st.sidebar.markdown("---")
 st.sidebar.header("📥 Applicant Input Mode")
 
 input_mode = st.sidebar.radio(
-    "Choose Input Method:", options=["Select from Full Test Set", "Manual Form Entry"]
+    "Choose Input Method:",
+    options=["Select from Full Test Set", "Manual Form Entry"],
 )
 
 raw_input = {}
@@ -132,21 +131,21 @@ if input_mode == "Select from Full Test Set":
 
     st.sidebar.subheader("📋 Select Test Applicant Row")
     selected_idx = st.sidebar.number_input(
-        f"Select Applicant Row (0 to {total_samples - 1}):",
+        f"Applicant Index (0 to {total_samples - 1}):",
         min_value=0,
         max_value=total_samples - 1,
         value=0,
         step=1,
     )
 
-    # Extract the chosen row as a dictionary
+    # Extract selected row as a dictionary
     raw_input = test_df.iloc[selected_idx].to_dict()
     st.sidebar.success(
-        f"Loaded Applicant #{selected_idx} from test set ({total_samples}"
-        " total records)."
+        f"Loaded Applicant #{selected_idx} of {total_samples} from"
+        " test_dataset.csv."
     )
   else:
-    st.sidebar.error("X_test.csv not found in repository.")
+    st.sidebar.error("test_dataset.csv could not be retrieved from Hugging Face.")
 
 elif input_mode == "Manual Form Entry":
   st.sidebar.subheader("👤 Enter Applicant Details")
@@ -183,6 +182,7 @@ elif input_mode == "Manual Form Entry":
       "State Frequency Count", min_value=1, max_value=50000, value=15000
   )
 
+  # Explicit One-Hot Encoding
   raw_input["Married_Single_single"] = 1 if married == "single" else 0
   raw_input["Married_Single_married"] = 1 if married == "married" else 0
   raw_input["House_Ownership_owned"] = 1 if house_ownership == "owned" else 0
@@ -198,10 +198,10 @@ input_df = pd.DataFrame([raw_input])
 # -----------------------------------------------------------------------------
 # FEATURE SCALING & PREDICTION PIPELINE
 # -----------------------------------------------------------------------------
-if artifacts and "scaler" in artifacts:
+if artifacts and "scaler" in artifacts and not input_df.empty:
   scaler = artifacts["scaler"]
 
-  # Align features to scaler's feature set
+  # Align features to scaler schema
   if hasattr(scaler, "feature_names_in_"):
     expected_cols = list(scaler.feature_names_in_)
   else:
@@ -209,13 +209,13 @@ if artifacts and "scaler" in artifacts:
 
   aligned_df = input_df.reindex(columns=expected_cols, fill_value=0.0)
 
-  # Scale data and maintain DataFrame structure
+  # Scale data while preserving feature DataFrame format
   scaled_array = scaler.transform(aligned_df)
   scaled_df = pd.DataFrame(
       scaled_array, columns=expected_cols, index=aligned_df.index
   )
 
-  # Retrieve models
+  # Fetch phase models based on selected architecture
   prefix = "rf" if selected_arch == "Random Forest" else "xgb"
   m_p1 = artifacts[f"{prefix}_p1"]
   m_p2 = artifacts[f"{prefix}_p2"]
@@ -223,7 +223,7 @@ if artifacts and "scaler" in artifacts:
 
   p3_threshold = 0.51 if selected_arch == "Random Forest" else 0.61
 
-  # Execute predictions safely across all phases
+  # Execute predictions safely across phases
   prob_p1 = predict_proba_safe(m_p1, scaled_df)
   prob_p2 = predict_proba_safe(m_p2, scaled_df)
   prob_p3 = predict_proba_safe(m_p3, scaled_df)
@@ -308,14 +308,11 @@ if artifacts and "scaler" in artifacts:
   # --- TAB 3: DIAGNOSTICS & LOGS ---
   with tab3:
     st.subheader("🔍 Model Feature Vector Inspection")
-    st.markdown("**1. Raw Input Features:**")
+    st.markdown("**1. Raw Selected Record:**")
     st.dataframe(pd.DataFrame([raw_input]))
 
-    st.markdown("**2. Scaled Input Vector Passed to Classifier:**")
+    st.markdown("**2. Scaled Feature Vector Passed to Classifiers:**")
     st.dataframe(scaled_df)
 
 else:
-  st.error(
-      "Failed to load model artifacts from Hugging Face Hub repository"
-      " 'atomdev-ibktommy/credit-bias-audit-models'."
-  )
+  st.error("Failed to process inputs. Verify model artifacts on Hugging Face Hub.")
